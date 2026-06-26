@@ -1,0 +1,23 @@
+Package: phenoshot
+Title: AI-Based Plant Image Analysis for Morphological Trait Measurement
+Version: 0.0.0.9000
+Authors@R: 
+    person("JK", "Kim", , "kimjk@agronomy4future.com", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0002-9913-8768"))
+Description: Provides an automated pipeline for plant phenotyping through image 
+    analysis. Uses AI-based background removal (remove.bg API or U2Net) combined 
+    with OpenCV-based object detection to measure morphological traits including 
+    area, perimeter, length, and width of plant objects. Supports JPG, PNG, and 
+    HEIC image formats. Designed for agronomic research applications such as 
+    leaf area estimation, fruit morphology analysis, and seedling measurement.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 8.0.0
+Imports:
+    reticulate
+Suggests:
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+URL: https://github.com/agronomy4future/phenoshot
