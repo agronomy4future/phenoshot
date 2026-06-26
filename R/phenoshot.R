@@ -207,7 +207,7 @@ def _removebg(image_path, api_key, nobg_save_path):
     response = requests.post(
         'https://api.remove.bg/v1.0/removebg',
         files=files,
-        data={'size': 'auto'},
+        data={'size': 'auto', 'type': 'product'},
         headers={'X-Api-Key': api_key}
     )
     if response.status_code != 200:
