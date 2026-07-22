@@ -250,8 +250,10 @@ def _build_files(image_path):
             print(f'  Uploading HEIC natively ({size_mb:.1f} MB, no re-encode).')
         with open(image_path, 'rb') as f:
             data = f.read()
-        return {'image_file': (os.path.basename(image_path), data, ctype)} \
-               if ctype else {'image_file': (os.path.basename(image_path), data)}
+        name = os.path.basename(image_path)
+        if ctype:
+            return {'image_file': (name, data, ctype)}
+        return {'image_file': (name, data)}
 
     # oversized -> downscale and re-encode as JPEG
     print(f'  Image too large ({size_mb:.1f} MB) -> converting to JPEG.')
