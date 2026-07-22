@@ -15,9 +15,12 @@ Supported input formats: **JPG, PNG, WEBP, HEIC**.
 ## Installation
 
 ```r
-if (!require(remotes)) install.packages("remotes")
-remotes::install_github("agronomy4future/phenoshot", force = TRUE)
-
+# Install the package
+if(!require(remotes)) install.packages("remotes")
+if (!requireNamespace("phenoshot", quietly= TRUE)) {
+  remotes::install_github("agronomy4future/phenoshot", force= TRUE)
+}
+library(remotes)
 library(phenoshot)
 ```
 
