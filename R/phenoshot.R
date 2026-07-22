@@ -30,29 +30,31 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip
   }
   invisible(TRUE)
 }
+
 #' AI-Based Plant Image Analysis for Morphological Trait Measurement
 #'
 #' Automated pipeline for plant phenotyping through image analysis.
 #' Uses AI-based background removal combined with OpenCV-based object
 #' detection to measure morphological traits including area, perimeter,
-#' length, and width. Supports JPG, PNG, and HEIC image formats.
-#' To use the background removal feature, an API key from
-#' \url{https://www.remove.bg/api} is required. If pre-processed
-#' \code{_nobg.png} files are already available in the input folder,
-#' the API key can be omitted.
+#' length, and width. Supports JPG, PNG, WEBP, and HEIC image formats.
 #'
 #' @param input_folder Character. Path to folder containing input images
-#'   (JPG, PNG, HEIC) or pre-processed `_nobg.png` files.
-#'   If `_nobg.png` files are present, API key is not required.
+#'   (JPG, PNG, WEBP, HEIC) or pre-processed `_nobg.png` files.
 #' @param output_folder Character. Path to folder for saving results.
 #'   Created automatically if it does not exist. Output files include
 #'   `_nobg.png`, `_nobg_processed.jpg`, and `image_processed.csv`.
 #' @param image_real_cm Numeric vector of length 2. Real-world image dimensions
 #'   in centimeters as `c(width_cm, height_cm)`. Used to convert pixel
 #'   measurements to cm. Default: `c(20, 20)`.
-#' @param removebg_api_key Character. API key for remove.bg background removal
-#'   service. Required only when `_nobg.png` files are not pre-existing.
-#'   Default: `""`.
+#' @param photoroom_api_key Character. Photoroom API key. Required only when
+#'   `_nobg.png` files are not pre-existing. Prefixing the key with
+#'   `sandbox_` enables Photoroom's free sandbox mode, but results are
+#'   watermarked and must not be used for measurement. Default: `""`.
+#' @param photoroom_size Character or NULL. Optional Photoroom `size`
+#'   parameter controlling output resolution: `"preview"` (0.25 MP),
+#'   `"medium"` (1.5 MP), `"hd"` (4 MP), or `"full"` (36 MP). `"full"` is
+#'   recommended for measurement work. `NULL` uses the service default.
+#'   Default: `NULL`.
 #' @param min_component_area_px Integer. Minimum connected-component area in
 #'   pixels to retain before calibration. Default: `500L`.
 #' @param k_open Integer vector of length 2. Kernel size `c(w, h)` for
@@ -69,11 +71,20 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip
 #'   the axis-aligned bounding box. If `FALSE`, from the rotated minimum-area
 #'   rectangle. Default: `TRUE`.
 #' @param contour_color Integer vector of length 3. Contour color in BGR format
-#'   `c(B, G, R)`. Default: `c(0L, 180L, 255L)` (orange).
+#'   `c(B, G, R)`, used only when `distinct_colors = FALSE`.
+#'   Default: `c(0L, 180L, 255L)` (orange).
 #' @param alpha_threshold Integer. Alpha channel threshold between 0 and 255
 #'   for object detection. Default: `10L`.
 #' @param fill_opacity Numeric between 0 and 1. Opacity of semi-transparent
-#'   fill applied to detected objects. 0 means no fill. Default: `0.15`.
+#'   fill applied to the exact pixels counted for each object. 0 means no
+#'   fill. Default: `0.25`.
+#' @param distinct_colors Logical. If `TRUE`, each measured object is drawn in a
+#'   different color from an internal palette so adjacent objects can be told
+#'   apart. If `FALSE`, all objects use `contour_color`. Default: `TRUE`.
+#' @param outline_thickness Integer. Thickness (px) of the per-object contour
+#'   outline. `0L` = auto-scale to image resolution. Default: `0L`.
+#' @param show_crosshair Logical. If `TRUE`, also draws the horizontal/vertical
+#'   center crosshair for each object. Default: `FALSE`.
 #'
 #' @return A data frame with one row per detected object containing columns
 #'   File Name, Object ID, Image Path, Object Area (cm2), Object Area (px),
@@ -100,28 +111,31 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip
 #'   image_real_cm = c(20, 20)
 #' )
 #'
-#' # Case 2: Using original images with remove.bg API
+#' # Case 2: Using original images with the Photoroom API
 #' phenoshot(
-#'   input_folder     = "./Input",
-#'   output_folder    = "./Output",
-#'   image_real_cm    = c(20, 20),
-#'   removebg_api_key = "your_api_key_here",
-#'   min_component_area_px   = 500L,
-#'   object_min_area_cm2     = 0.3,
-#'   max_keep                = 50L,
-#'   contour_color           = c(0L, 180L, 255L),
-#'   alpha_threshold         = 10L,
-#'   fill_opacity            = 0.15
+#'   input_folder      = "./Input",
+#'   output_folder     = "./Output",
+#'   image_real_cm     = c(20, 20),
+#'   photoroom_api_key = "your_api_key_here",
+#'   photoroom_size    = "full",
+#'   min_component_area_px = 500L,
+#'   object_min_area_cm2   = 0.3,
+#'   max_keep              = 50L,
+#'   distinct_colors       = TRUE,
+#'   outline_thickness     = 0L,
+#'   fill_opacity          = 0.25,
+#'   show_crosshair        = FALSE
 #' )
 #'
-#' ■ Github: https://github.com/agronomy4future/phenoshot
-#' - All Rights Reserved © J.K Kim (kimjk@agronomy4future.com)
+#' # Github: https://github.com/agronomy4future/phenoshot
+#' # All Rights Reserved (c) J.K Kim (kimjk@agronomy4future.com)
 #' }
 phenoshot= function(
     input_folder,
     output_folder,
     image_real_cm           = c(20, 20),
-    removebg_api_key        = "",
+    photoroom_api_key       = "",
+    photoroom_size          = NULL,
     min_component_area_px   = 500L,
     k_open                  = c(3L, 3L),
     k_close                 = c(5L, 5L),
@@ -131,10 +145,20 @@ phenoshot= function(
     label_uses_aabb         = TRUE,
     contour_color           = c(0L, 180L, 255L),
     alpha_threshold         = 10L,
-    fill_opacity            = 0.15
+    fill_opacity            = 0.25,
+    distinct_colors         = TRUE,
+    outline_thickness       = 0L,
+    show_crosshair          = FALSE
 ) {
-  if (length(image_real_cm) == 1) image_real_cm <- rep(image_real_cm, 2)
+  if (length(image_real_cm) == 1) image_real_cm= rep(image_real_cm, 2)
   stopifnot(length(image_real_cm) == 2, all(is.finite(image_real_cm)), all(image_real_cm > 0))
+
+  if (grepl("^sandbox_", photoroom_api_key)) {
+    warning("Photoroom sandbox key detected: results are watermarked and are ",
+            "not suitable for measurement. Use a live key for real analysis.",
+            call. = FALSE)
+  }
+
   if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE, showWarnings = FALSE)
 
   ensure_pydeps(verbose = FALSE)
@@ -153,10 +177,32 @@ try:
 except Exception:
     pass
 
+# Photoroom Remove Background API
+PHOTOROOM_URL     = 'https://sdk.photoroom.com/v1/segment'
+PHOTOROOM_HEADER  = 'x-api-key'
+PHOTOROOM_MAX_MB  = 45     # fall back to JPEG above this upload size
+QUOTA_HDRS        = ['x-credits-remaining', 'x-remaining-credits', 'X-Credits-Remaining']
+
+# Visually distinct BGR colors used when distinct_colors=True
+PALETTE = [
+    (0,   0,   255),   # red
+    (0,   140, 255),   # orange
+    (0,   215, 255),   # amber
+    (0,   220, 0),     # green
+    (220, 220, 0),     # cyan
+    (255, 120, 0),     # azure
+    (255, 0,   0),     # blue
+    (255, 0,   200),   # magenta
+    (180, 0,   255),   # pink
+    (0,   180, 140),   # olive
+    (120, 90,  255),   # coral
+    (0,   255, 120),   # spring green
+]
+
 def _discover_unique_images(folder):
     patterns = [
-        '*.jpg','*.jpeg','*.png',
-        '*.JPG','*.JPEG','*.PNG',
+        '*.jpg','*.jpeg','*.png','*.webp',
+        '*.JPG','*.JPEG','*.PNG','*.WEBP',
         '*.heic','*.HEIC','*.heif','*.HEIF'
     ]
     all_paths = []
@@ -169,51 +215,87 @@ def _discover_unique_images(folder):
             seen[key] = p
     unique_paths = sorted(seen.values())
 
-    # _nobg.png 있으면 → 그것만 사용 (API/원본 불필요)
-    # 없으면 → 원본 이미지 사용
+    # if _nobg.png exists -> use only those (no API / no original needed)
+    # otherwise -> use original images
     nobg_files = [p for p in unique_paths
                   if '_nobg' in os.path.splitext(os.path.basename(p))[0]]
     orig_files = [p for p in unique_paths
                   if '_nobg' not in os.path.splitext(os.path.basename(p))[0]]
 
     if nobg_files:
-        print(f'Found {len(nobg_files)} _nobg image(s) → API skipped.')
-        return nobg_files, True   # True = nobg 모드
+        print(f'Found {len(nobg_files)} _nobg image(s) -> API skipped.')
+        return nobg_files, True   # True = nobg mode
     print(f'Found {len(orig_files)} original image(s).')
-    return orig_files, False      # False = 원본 모드
+    return orig_files, False      # False = original mode
 
 def _open_image(path):
     return Image.open(path).convert('RGB')
 
-def _removebg(image_path, api_key, nobg_save_path):
-    ext = os.path.splitext(image_path)[1].lower()
-    if ext in ('.heic', '.heif'):
-        print(f'  Converting HEIC to JPEG for API...')
-        img = _open_image(image_path)
-        orig_w, orig_h = img.size
-        max_px = 4000
-        if max(orig_w, orig_h) > max_px:
-            scale = max_px / max(orig_w, orig_h)
-            img = img.resize((int(orig_w*scale), int(orig_h*scale)), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format='JPEG', quality=92)
-        buf.seek(0)
-        files = {'image_file': ('image.jpg', buf, 'image/jpeg')}
-    else:
+def _build_files(image_path):
+    '''Prepare the multipart payload for Photoroom.
+
+    Photoroom accepts PNG, JPEG, WEBP and HEIC, so the original file is
+    uploaded untouched. This avoids a lossy downscale + re-encode that
+    would blur object edges and bias the area measurement. Only files
+    above the upload size limit are converted to JPEG.
+    '''
+    ext     = os.path.splitext(image_path)[1].lower()
+    size_mb = os.path.getsize(image_path) / (1024 * 1024)
+
+    if size_mb <= PHOTOROOM_MAX_MB:
+        ctype = {'.heic': 'image/heic', '.heif': 'image/heic',
+                 '.png' : 'image/png',  '.webp': 'image/webp',
+                 '.jpg' : 'image/jpeg', '.jpeg': 'image/jpeg'}.get(ext)
+        if ext in ('.heic', '.heif'):
+            print(f'  Uploading HEIC natively ({size_mb:.1f} MB, no re-encode).')
         with open(image_path, 'rb') as f:
-            img_bytes = f.read()
-        files = {'image_file': (os.path.basename(image_path), img_bytes)}
+            data = f.read()
+        return {'image_file': (os.path.basename(image_path), data, ctype)} \
+               if ctype else {'image_file': (os.path.basename(image_path), data)}
+
+    # oversized -> downscale and re-encode as JPEG
+    print(f'  Image too large ({size_mb:.1f} MB) -> converting to JPEG.')
+    img = _open_image(image_path)
+    ow, oh = img.size
+    max_px = 5000
+    if max(ow, oh) > max_px:
+        scale = max_px / max(ow, oh)
+        img = img.resize((int(ow*scale), int(oh*scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=92)
+    buf.seek(0)
+    return {'image_file': ('image.jpg', buf, 'image/jpeg')}
+
+def _remove_background(image_path, api_key, nobg_save_path, photoroom_size):
+    '''Call the Photoroom Remove Background API and save the RGBA PNG.'''
+    files = _build_files(image_path)
+
+    # png output keeps the alpha channel, which the pipeline relies on.
+    # NOTE: 'crop' is deliberately NOT used -- cropping would change the
+    # framing and invalidate the image_real_cm calibration.
+    data = {'format': 'png'}
+    if photoroom_size:
+        data['size'] = str(photoroom_size)
 
     response = requests.post(
-        'https://api.remove.bg/v1.0/removebg',
+        PHOTOROOM_URL,
         files=files,
-        data={'size': 'auto', 'type': 'product'},
-        headers={'X-Api-Key': api_key}
+        data=data,
+        headers={PHOTOROOM_HEADER: api_key},
+        timeout=120
     )
     if response.status_code != 200:
-        raise RuntimeError(f'remove.bg API error {response.status_code}: {response.text}')
-    remaining = response.headers.get('X-Free-Calls', '?')
-    print(f'  remove.bg OK. Free calls remaining: {remaining}')
+        raise RuntimeError(
+            f'Photoroom API error {response.status_code}: {response.text[:300]}'
+        )
+
+    quota = None
+    for hdr in QUOTA_HDRS:
+        if hdr in response.headers:
+            quota = f'{hdr}={response.headers[hdr]}'
+            break
+    print('  Photoroom OK.' + (f' ({quota})' if quota else ''))
+
     with open(nobg_save_path, 'wb') as f:
         f.write(response.content)
     print(f'  nobg saved: {nobg_save_path}')
@@ -229,10 +311,11 @@ def _perimeter_cm_from_cnt(cnt, sx, sy):
 
 def process_images(input_folder, output_folder,
                    image_real_cm_W, image_real_cm_H,
-                   removebg_api_key,
+                   photoroom_api_key, photoroom_size,
                    min_component_area_px, k_open, k_close,
                    object_min_area_cm2, rel_min_frac_of_largest, max_keep,
-                   label_uses_aabb, contour_color, alpha_threshold, fill_opacity):
+                   label_uses_aabb, contour_color, alpha_threshold, fill_opacity,
+                   distinct_colors, outline_thickness, show_crosshair):
 
     if not os.path.isdir(input_folder):
         print(f'Input folder does not exist: {input_folder}')
@@ -245,7 +328,6 @@ def process_images(input_folder, output_folder,
         return pd.DataFrame()
 
     col  = tuple(int(c) for c in contour_color)
-    k3   = np.ones((3,3), np.uint8)
     rows = []
 
     for path in image_paths:
@@ -253,41 +335,39 @@ def process_images(input_folder, output_folder,
         base     = os.path.splitext(filename)[0]
 
         if is_nobg_mode:
-            # _nobg.png 직접 입력 모드
-            # C1_nobg.png → stem = C1
+            # direct _nobg.png input mode
+            # C1_nobg.png -> stem = C1
             stem      = base.replace('_nobg', '')
-            nobg_path = path   # 이 파일 자체가 nobg
+            nobg_path = path   # the file itself is the nobg
         else:
-            # 원본 이미지 모드
+            # original image mode
             stem      = base
             nobg_path = os.path.join(output_folder, stem + '_nobg.png')
 
         proc_path = os.path.join(output_folder, stem + '_nobg_processed.jpg')
         print(f'Processing: {filename}')
 
-        # ── 1. nobg.png 준비 ─────────────────────────────────────────
+        # -- 1. obtain the transparent PNG ---------------------------
         if is_nobg_mode:
-            # _nobg.png 직접 사용
             with open(nobg_path, 'rb') as f:
                 png_bytes = f.read()
             print(f'  Using _nobg directly: {nobg_path}')
         elif os.path.exists(nobg_path):
-            # Output에 기존 nobg 있으면 재사용
             print(f'  Using existing nobg: {nobg_path}')
             with open(nobg_path, 'rb') as f:
                 png_bytes = f.read()
-        elif removebg_api_key:
-            # API로 생성
+        elif photoroom_api_key:
             try:
-                png_bytes = _removebg(path, removebg_api_key, nobg_path)
+                png_bytes = _remove_background(path, photoroom_api_key,
+                                               nobg_path, photoroom_size)
             except Exception as e:
-                print(f'  remove.bg failed: {e} — skipping')
+                print(f'  Photoroom failed: {e} -- skipping')
                 continue
         else:
-            print(f'  No _nobg.png and no API key — skipping')
+            print('  No _nobg.png and no API key -- skipping')
             continue
 
-        # ── 2. 알파채널 → 마스크 ─────────────────────────────────────
+        # -- 2. alpha channel -> mask --------------------------------
         rgba  = np.array(Image.open(io.BytesIO(png_bytes)).convert('RGBA'))
         alpha = rgba[:, :, 3]
         rgb   = rgba[:, :, :3]
@@ -298,9 +378,6 @@ def process_images(input_folder, output_folder,
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
                                 np.ones(tuple(k_close), np.uint8), iterations=2)
 
-        eroded   = cv2.erode(mask, k3, iterations=1)
-        boundary = mask - eroded
-
         h, w = mask.shape[:2]
         area_per_pixel_cm2 = (image_real_cm_W / w) * (image_real_cm_H / h)
         sx = image_real_cm_W / w
@@ -309,7 +386,11 @@ def process_images(input_folder, output_folder,
         font_scale = max(0.6, round(max(w, h) / 1600, 2))
         line_thick = max(1, int(max(w, h) / 1500))
 
-        # ── 3. Contour 탐지 ──────────────────────────────────────────
+        # per-object outline thickness (auto-scale when outline_thickness <= 0)
+        ot = int(outline_thickness)
+        ol_thick = ot if ot > 0 else max(2, int(max(w, h) / 500))
+
+        # -- 3. contour detection ------------------------------------
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = [c for c in contours if cv2.contourArea(c) >= float(min_component_area_px)]
 
@@ -327,14 +408,14 @@ def process_images(input_folder, output_folder,
 
         print(f'  Detected: {len(contours)} objects')
 
-        # ── 4. 배경 합성 ─────────────────────────────────────────────
+        # -- 4. composite over white background ----------------------
         comp = np.ones_like(rgb, dtype=np.uint8) * 255
         comp[alpha > 0] = rgb[alpha > 0]
         annotated = cv2.cvtColor(comp, cv2.COLOR_RGB2BGR)
-        annotated[boundary > 0] = col
 
         if contours:
             for idx, cnt in enumerate(contours, start=1):
+                # exact pixels counted toward this object's area
                 filled = np.zeros(mask.shape, dtype=np.uint8)
                 cv2.drawContours(filled, [cnt], -1, 255, thickness=-1)
                 actual_mask = cv2.bitwise_and(mask, filled)
@@ -356,25 +437,34 @@ def process_images(input_folder, output_folder,
                     length_cm = float(max(rc[1]))
                     width_cm  = float(min(rc[1]))
 
-                if fill_opacity > 0:
+                # pick this object's color
+                obj_col = PALETTE[(idx - 1) % len(PALETTE)] if bool(distinct_colors) else col
+
+                # (a) semi-transparent fill over the EXACT counted pixels
+                if float(fill_opacity) > 0:
                     overlay = annotated.copy()
-                    overlay[actual_mask > 0] = col
+                    overlay[actual_mask > 0] = obj_col
                     cv2.addWeighted(overlay, float(fill_opacity),
                                     annotated, 1.0 - float(fill_opacity),
                                     0, annotated)
-                    annotated[boundary > 0] = col
 
-                cv2.line(annotated, (x, cy), (x+bw, cy), col, line_thick)
-                cv2.line(annotated, (cx, y), (cx, y+bh), col, line_thick)
+                # (b) thick outline tracing this object's real contour
+                cv2.drawContours(annotated, [cnt], -1, obj_col, ol_thick, cv2.LINE_AA)
 
+                # (c) optional center crosshair
+                if bool(show_crosshair):
+                    cv2.line(annotated, (x, cy), (x+bw, cy), obj_col, line_thick)
+                    cv2.line(annotated, (cx, y), (cx, y+bh), obj_col, line_thick)
+
+                # (d) label colored to match the outline (black halo for legibility)
                 label = f'Obj {idx} ({area_cm2:.2f} cm2)'
                 ty = max(int(font_scale*20)+4, y - 6)
                 cv2.putText(annotated, label, (x, ty),
                             cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-                            (255,255,255), line_thick+3, cv2.LINE_AA)
+                            (0,0,0), line_thick+3, cv2.LINE_AA)
                 cv2.putText(annotated, label, (x, ty),
                             cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-                            (30,30,30), line_thick+1, cv2.LINE_AA)
+                            obj_col, line_thick+1, cv2.LINE_AA)
 
                 rows.append({
                     'File Name'            : filename,
@@ -407,27 +497,31 @@ def process_images(input_folder, output_folder,
 
     return df
 "
-  reticulate::py_run_string(py_code)
+reticulate::py_run_string(py_code)
 
-  df_py= reticulate::py$process_images(
-    input_folder            = normalizePath(input_folder,  winslash="\\", mustWork=FALSE),
-    output_folder           = normalizePath(output_folder, winslash="\\", mustWork=FALSE),
-    image_real_cm_W         = as.numeric(image_real_cm[1]),
-    image_real_cm_H         = as.numeric(image_real_cm[2]),
-    removebg_api_key        = as.character(removebg_api_key),
-    min_component_area_px   = as.integer(min_component_area_px),
-    k_open                  = as.integer(k_open),
-    k_close                 = as.integer(k_close),
-    object_min_area_cm2     = as.numeric(object_min_area_cm2),
-    rel_min_frac_of_largest = as.numeric(rel_min_frac_of_largest),
-    max_keep                = as.integer(max_keep),
-    label_uses_aabb         = isTRUE(label_uses_aabb),
-    contour_color           = as.integer(contour_color),
-    alpha_threshold         = as.integer(alpha_threshold),
-    fill_opacity            = as.numeric(fill_opacity)
-  )
+df_py= reticulate::py$process_images(
+  input_folder            = normalizePath(input_folder,  winslash="\\", mustWork=FALSE),
+  output_folder           = normalizePath(output_folder, winslash="\\", mustWork=FALSE),
+  image_real_cm_W         = as.numeric(image_real_cm[1]),
+  image_real_cm_H         = as.numeric(image_real_cm[2]),
+  photoroom_api_key       = as.character(photoroom_api_key),
+  photoroom_size          = if (is.null(photoroom_size)) NULL else as.character(photoroom_size),
+  min_component_area_px   = as.integer(min_component_area_px),
+  k_open                  = as.integer(k_open),
+  k_close                 = as.integer(k_close),
+  object_min_area_cm2     = as.numeric(object_min_area_cm2),
+  rel_min_frac_of_largest = as.numeric(rel_min_frac_of_largest),
+  max_keep                = as.integer(max_keep),
+  label_uses_aabb         = isTRUE(label_uses_aabb),
+  contour_color           = as.integer(contour_color),
+  alpha_threshold         = as.integer(alpha_threshold),
+  fill_opacity            = as.numeric(fill_opacity),
+  distinct_colors         = isTRUE(distinct_colors),
+  outline_thickness       = as.integer(outline_thickness),
+  show_crosshair          = isTRUE(show_crosshair)
+)
 
-  out= reticulate::py_to_r(df_py)
-  if (is.null(out)) out= data.frame()
-  out
+out= reticulate::py_to_r(df_py)
+if (is.null(out)) out= data.frame()
+out
 }

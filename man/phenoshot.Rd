@@ -8,7 +8,8 @@ phenoshot(
   input_folder,
   output_folder,
   image_real_cm = c(20, 20),
-  removebg_api_key = "",
+  photoroom_api_key = "",
+  photoroom_size = NULL,
   min_component_area_px = 500L,
   k_open = c(3L, 3L),
   k_close = c(5L, 5L),
@@ -18,13 +19,15 @@ phenoshot(
   label_uses_aabb = TRUE,
   contour_color = c(0L, 180L, 255L),
   alpha_threshold = 10L,
-  fill_opacity = 0.15
+  fill_opacity = 0.25,
+  distinct_colors = TRUE,
+  outline_thickness = 0L,
+  show_crosshair = FALSE
 )
 }
 \arguments{
 \item{input_folder}{Character. Path to folder containing input images
-(JPG, PNG, HEIC) or pre-processed \verb{_nobg.png} files.
-If \verb{_nobg.png} files are present, API key is not required.}
+(JPG, PNG, WEBP, HEIC) or pre-processed \verb{_nobg.png} files.}
 
 \item{output_folder}{Character. Path to folder for saving results.
 Created automatically if it does not exist. Output files include
@@ -34,9 +37,16 @@ Created automatically if it does not exist. Output files include
 in centimeters as \code{c(width_cm, height_cm)}. Used to convert pixel
 measurements to cm. Default: \code{c(20, 20)}.}
 
-\item{removebg_api_key}{Character. API key for remove.bg background removal
-service. Required only when \verb{_nobg.png} files are not pre-existing.
-Default: \code{""}.}
+\item{photoroom_api_key}{Character. Photoroom API key. Required only when
+\verb{_nobg.png} files are not pre-existing. Prefixing the key with
+\code{sandbox_} enables Photoroom's free sandbox mode, but results are
+watermarked and must not be used for measurement. Default: \code{""}.}
+
+\item{photoroom_size}{Character or NULL. Optional Photoroom \code{size}
+parameter controlling output resolution: \code{"preview"} (0.25 MP),
+\code{"medium"} (1.5 MP), \code{"hd"} (4 MP), or \code{"full"} (36 MP). \code{"full"} is
+recommended for measurement work. \code{NULL} uses the service default.
+Default: \code{NULL}.}
 
 \item{min_component_area_px}{Integer. Minimum connected-component area in
 pixels to retain before calibration. Default: \code{500L}.}
@@ -61,13 +71,25 @@ the axis-aligned bounding box. If \code{FALSE}, from the rotated minimum-area
 rectangle. Default: \code{TRUE}.}
 
 \item{contour_color}{Integer vector of length 3. Contour color in BGR format
-\code{c(B, G, R)}. Default: \code{c(0L, 180L, 255L)} (orange).}
+\code{c(B, G, R)}, used only when \code{distinct_colors = FALSE}.
+Default: \code{c(0L, 180L, 255L)} (orange).}
 
 \item{alpha_threshold}{Integer. Alpha channel threshold between 0 and 255
 for object detection. Default: \code{10L}.}
 
 \item{fill_opacity}{Numeric between 0 and 1. Opacity of semi-transparent
-fill applied to detected objects. 0 means no fill. Default: \code{0.15}.}
+fill applied to the exact pixels counted for each object. 0 means no
+fill. Default: \code{0.25}.}
+
+\item{distinct_colors}{Logical. If \code{TRUE}, each measured object is drawn in a
+different color from an internal palette so adjacent objects can be told
+apart. If \code{FALSE}, all objects use \code{contour_color}. Default: \code{TRUE}.}
+
+\item{outline_thickness}{Integer. Thickness (px) of the per-object contour
+outline. \code{0L} = auto-scale to image resolution. Default: \code{0L}.}
+
+\item{show_crosshair}{Logical. If \code{TRUE}, also draws the horizontal/vertical
+center crosshair for each object. Default: \code{FALSE}.}
 }
 \value{
 A data frame with one row per detected object containing columns
@@ -79,11 +101,7 @@ Object percent of Image, Pixel Area (cm2/px), and Num objects in Image.
 Automated pipeline for plant phenotyping through image analysis.
 Uses AI-based background removal combined with OpenCV-based object
 detection to measure morphological traits including area, perimeter,
-length, and width. Supports JPG, PNG, and HEIC image formats.
-To use the background removal feature, an API key from
-\url{https://www.remove.bg/api} is required. If pre-processed
-\code{_nobg.png} files are already available in the input folder,
-the API key can be omitted.
+length, and width. Supports JPG, PNG, WEBP, and HEIC image formats.
 }
 \examples{
 \dontrun{
@@ -103,21 +121,23 @@ phenoshot(
   image_real_cm = c(20, 20)
 )
 
-# Case 2: Using original images with remove.bg API
+# Case 2: Using original images with the Photoroom API
 phenoshot(
-  input_folder     = "./Input",
-  output_folder    = "./Output",
-  image_real_cm    = c(20, 20),
-  removebg_api_key = "your_api_key_here",
-  min_component_area_px   = 500L,
-  object_min_area_cm2     = 0.3,
-  max_keep                = 50L,
-  contour_color           = c(0L, 180L, 255L),
-  alpha_threshold         = 10L,
-  fill_opacity            = 0.15
+  input_folder      = "./Input",
+  output_folder     = "./Output",
+  image_real_cm     = c(20, 20),
+  photoroom_api_key = "your_api_key_here",
+  photoroom_size    = "full",
+  min_component_area_px = 500L,
+  object_min_area_cm2   = 0.3,
+  max_keep              = 50L,
+  distinct_colors       = TRUE,
+  outline_thickness     = 0L,
+  fill_opacity          = 0.25,
+  show_crosshair        = FALSE
 )
 
-■ Github: https://github.com/agronomy4future/phenoshot
-- All Rights Reserved © J.K Kim (kimjk@agronomy4future.com)
+# Github: https://github.com/agronomy4future/phenoshot
+# All Rights Reserved (c) J.K Kim (kimjk@agronomy4future.com)
 }
 }
