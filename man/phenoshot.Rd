@@ -22,7 +22,23 @@ phenoshot(
   fill_opacity = 0.25,
   distinct_colors = TRUE,
   outline_thickness = 0L,
-  show_crosshair = FALSE
+  show_crosshair = FALSE,
+  weed_filter = c("none", "width"),
+  leaf_min_width_cm = 1.5,
+  debug_weed_mask = FALSE,
+  outline_mode = c("exact", "outer"),
+  outline_min_hole_cm2 = 1,
+  k_close_iter = 2L,
+  scale_marker = c("none", "aruco"),
+  marker_size_cm = 5,
+  aruco_dict = "DICT_4X4_50",
+  marker_id = NULL,
+  marker_min_px = 40L,
+  marker_max_dev = 2,
+  camera_height_cm = NULL,
+  canopy_height_cm = 0,
+  object_order = c("area", "position"),
+  params_json = TRUE
 )
 }
 \arguments{
@@ -90,18 +106,116 @@ outline. \code{0L} = auto-scale to image resolution. Default: \code{0L}.}
 
 \item{show_crosshair}{Logical. If \code{TRUE}, also draws the horizontal/vertical
 center crosshair for each object. Default: \code{FALSE}.}
+
+\item{weed_filter}{Character. Strategy for discarding thin, non-target
+structures such as grass-type weed leaves that survive background removal.
+\code{"none"} disables the step and reproduces the behaviour of earlier
+versions. \code{"width"} applies a distance-transform width filter that removes
+any structure narrower than \code{leaf_min_width_cm}, including thin structures
+physically touching a target object. Default: \code{"none"}.}
+
+\item{leaf_min_width_cm}{Numeric. Minimum local width, in centimeters, that a
+structure must reach to be retained when \code{weed_filter = "width"}. Narrower
+structures such as grass weed leaves and petioles are removed. Specified in
+cm rather than pixels so the setting stays valid across image resolutions.
+Default: \code{1.5}.}
+
+\item{debug_weed_mask}{Logical. If \code{TRUE}, writes \verb{<stem>_weed.png}
+containing the pixels discarded by \code{weed_filter}, so \code{leaf_min_width_cm}
+can be tuned by visual inspection. Default: \code{FALSE}.}
+
+\item{outline_mode}{Character. How the per-object outline is drawn.
+\code{"exact"} traces the boundary of the pixels actually counted, so internal
+background gaps are outlined as holes and the drawing matches the reported
+area. \code{"outer"} draws only the external contour, which visually encloses
+background gaps that are not counted; this reproduces the behaviour of
+earlier versions. Default: \code{"exact"}.}
+
+\item{outline_min_hole_cm2}{Numeric. Minimum area (cm2) an internal gap must
+have to be outlined when \code{outline_mode = "exact"}. Prevents insect-damage
+holes and single-pixel gaps from cluttering the overlay. Default: \code{1}.}
+
+\item{k_close_iter}{Integer. Number of iterations for the morphological
+closing that fills small gaps. Higher values merge more background between
+touching objects into the measured area; \code{0L} disables closing entirely for
+the strictest area estimate. Default: \code{2L}.}
+
+\item{scale_marker}{Character. Source of the pixel-to-centimeter scale.
+\code{"none"} derives it from \code{image_real_cm}, which assumes the camera
+distance is identical for every image. \code{"aruco"} detects an ArUco marker of
+known size in the ORIGINAL image and derives the scale per image, so
+variation in camera height no longer biases area. Requires
+\code{opencv-contrib-python}; falls back to \code{image_real_cm} with a message when
+no marker is found, or when the input folder holds \verb{_nobg.png} files (the
+marker has already been erased by background removal). Default: \code{"none"}.}
+
+\item{marker_size_cm}{Numeric. Physical side length of the ArUco marker in
+centimeters. Default: \code{5}.}
+
+\item{aruco_dict}{Character. Name of the predefined ArUco dictionary, e.g.
+\code{"DICT_4X4_50"}, \code{"DICT_5X5_100"}, \code{"DICT_6X6_250"}. Default:
+\code{"DICT_4X4_50"}.}
+
+\item{marker_id}{Integer or \code{NULL}. If given, only a marker carrying this ID
+is accepted, which is the strongest protection against leaf damage or
+speckle being misread as a marker. \code{NULL} accepts any ID. Default: \code{NULL}.}
+
+\item{marker_min_px}{Integer. Minimum marker side length in pixels. Smaller
+detections are rejected as false positives. Default: \code{40L}.}
+
+\item{marker_max_dev}{Numeric. A marker-derived field of view is rejected
+when it differs from \code{image_real_cm} by more than this factor in either
+direction, and \code{image_real_cm} is used instead. Set larger only if the
+fallback value is a rough guess. Default: \code{2}.}
+
+\item{camera_height_cm}{Numeric or \code{NULL}. Height of the camera above the
+plane on which \code{image_real_cm} was measured, usually the ground. Supplying
+it together with \code{canopy_height_cm} corrects the magnification caused by
+leaves sitting above that plane. \code{NULL} disables the correction. The
+correction is skipped when a marker supplied the scale, since a marker
+placed at canopy height already measures the correct plane.
+Default: \code{NULL}.}
+
+\item{canopy_height_cm}{Numeric of length 1 or 2. Height of the leaf layer
+above the ground at the time of capture. A single value applies one
+correction. A length-2 vector \code{c(min, max)} corrects using the midpoint and
+additionally reports Object Area Min (cm2) and Object Area Max (cm2), which
+bracket the estimate for a canopy spanning that range. Default: \code{0}.}
+
+\item{object_order}{Character. Rule for assigning Object ID. \code{"area"} numbers
+objects from largest to smallest, so IDs change whenever an object grows.
+\code{"position"} numbers them in reading order (top-left to bottom-right),
+keeping ID to physical location stable across dates, which is what
+time-series analysis needs. Default: \code{"area"}.}
+
+\item{params_json}{Logical. If \code{TRUE}, writes
+\verb{phenoshot_params_<timestamp>.json} into \code{output_folder} recording every
+parameter, package versions, and the scale actually used for each image.
+Default: \code{TRUE}.}
 }
 \value{
 A data frame with one row per detected object containing columns
 File Name, Object ID, Image Path, Object Area (cm2), Object Area (px),
+Object Gap Area (cm2), Object Area Min (cm2), Object Area Max (cm2),
 Object Perimeter (cm), Object Length (cm), Object Width (cm),
-Object percent of Image, Pixel Area (cm2/px), and Num objects in Image.
+Object percent of Image, Pixel Area (cm2/px), Canopy Height (cm),
+Scale Source, and Num objects in Image.
+
+Object Gap Area (cm2) is the background enclosed by the object's external
+contour but excluded from Object Area (cm2). Object Area Min (cm2) and
+Object Area Max (cm2) bracket the estimate when \code{canopy_height_cm} is given
+as a range, and equal Object Area (cm2) otherwise. Canopy Height (cm) is
+the height actually used for the correction, and Scale Source records
+whether the scale came from a detected marker or from image_real_cm.
 }
 \description{
 Automated pipeline for plant phenotyping through image analysis.
 Uses AI-based background removal combined with OpenCV-based object
 detection to measure morphological traits including area, perimeter,
-length, and width. Supports JPG, PNG, WEBP, and HEIC image formats.
+length, and width. Optional steps discard thin non-target structures such
+as grass weed leaves, and correct the pixel-to-centimeter scale either from
+a detected ArUco marker or from the camera and canopy heights. Supports
+JPG, PNG, WEBP, and HEIC image formats.
 }
 \examples{
 \dontrun{
@@ -135,6 +249,27 @@ phenoshot(
   outline_thickness     = 0L,
   fill_opacity          = 0.25,
   show_crosshair        = FALSE
+)
+
+# Case 3: Removing thin grass-type weed leaves from a crop canopy
+phenoshot(
+  input_folder      = "./Input",
+  output_folder     = "./Output",
+  image_real_cm     = c(60, 60),
+  weed_filter       = "width",
+  leaf_min_width_cm = 1.5,
+  debug_weed_mask   = TRUE   # inspect <stem>_weed.png, then tune the width
+)
+
+# Case 4: Frame on the ground, camera above it, canopy in between
+phenoshot(
+  input_folder      = "./Input",
+  output_folder     = "./Output",
+  image_real_cm     = c(75, 75),   # frame inner size, measured at the ground
+  camera_height_cm  = 100,         # lens to ground, measured
+  canopy_height_cm  = c(10, 30),   # leaf layer above the ground
+  alpha_threshold   = 128L,
+  object_order      = "position"
 )
 
 # Github: https://github.com/agronomy4future/phenoshot

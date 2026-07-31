@@ -30,13 +30,15 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip
   }
   invisible(TRUE)
 }
-
 #' AI-Based Plant Image Analysis for Morphological Trait Measurement
 #'
 #' Automated pipeline for plant phenotyping through image analysis.
 #' Uses AI-based background removal combined with OpenCV-based object
 #' detection to measure morphological traits including area, perimeter,
-#' length, and width. Supports JPG, PNG, WEBP, and HEIC image formats.
+#' length, and width. Optional steps discard thin non-target structures such
+#' as grass weed leaves, and correct the pixel-to-centimeter scale either from
+#' a detected ArUco marker or from the camera and canopy heights. Supports
+#' JPG, PNG, WEBP, and HEIC image formats.
 #'
 #' @param input_folder Character. Path to folder containing input images
 #'   (JPG, PNG, WEBP, HEIC) or pre-processed `_nobg.png` files.
@@ -85,11 +87,90 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip
 #'   outline. `0L` = auto-scale to image resolution. Default: `0L`.
 #' @param show_crosshair Logical. If `TRUE`, also draws the horizontal/vertical
 #'   center crosshair for each object. Default: `FALSE`.
+#' @param weed_filter Character. Strategy for discarding thin, non-target
+#'   structures such as grass-type weed leaves that survive background removal.
+#'   `"none"` disables the step and reproduces the behaviour of earlier
+#'   versions. `"width"` applies a distance-transform width filter that removes
+#'   any structure narrower than `leaf_min_width_cm`, including thin structures
+#'   physically touching a target object. Default: `"none"`.
+#' @param leaf_min_width_cm Numeric. Minimum local width, in centimeters, that a
+#'   structure must reach to be retained when `weed_filter = "width"`. Narrower
+#'   structures such as grass weed leaves and petioles are removed. Specified in
+#'   cm rather than pixels so the setting stays valid across image resolutions.
+#'   Default: `1.5`.
+#' @param debug_weed_mask Logical. If `TRUE`, writes `<stem>_weed.png`
+#'   containing the pixels discarded by `weed_filter`, so `leaf_min_width_cm`
+#'   can be tuned by visual inspection. Default: `FALSE`.
+#' @param outline_mode Character. How the per-object outline is drawn.
+#'   `"exact"` traces the boundary of the pixels actually counted, so internal
+#'   background gaps are outlined as holes and the drawing matches the reported
+#'   area. `"outer"` draws only the external contour, which visually encloses
+#'   background gaps that are not counted; this reproduces the behaviour of
+#'   earlier versions. Default: `"exact"`.
+#' @param outline_min_hole_cm2 Numeric. Minimum area (cm2) an internal gap must
+#'   have to be outlined when `outline_mode = "exact"`. Prevents insect-damage
+#'   holes and single-pixel gaps from cluttering the overlay. Default: `1`.
+#' @param k_close_iter Integer. Number of iterations for the morphological
+#'   closing that fills small gaps. Higher values merge more background between
+#'   touching objects into the measured area; `0L` disables closing entirely for
+#'   the strictest area estimate. Default: `2L`.
+#' @param scale_marker Character. Source of the pixel-to-centimeter scale.
+#'   `"none"` derives it from `image_real_cm`, which assumes the camera
+#'   distance is identical for every image. `"aruco"` detects an ArUco marker of
+#'   known size in the ORIGINAL image and derives the scale per image, so
+#'   variation in camera height no longer biases area. Requires
+#'   `opencv-contrib-python`; falls back to `image_real_cm` with a message when
+#'   no marker is found, or when the input folder holds `_nobg.png` files (the
+#'   marker has already been erased by background removal). Default: `"none"`.
+#' @param marker_size_cm Numeric. Physical side length of the ArUco marker in
+#'   centimeters. Default: `5`.
+#' @param aruco_dict Character. Name of the predefined ArUco dictionary, e.g.
+#'   `"DICT_4X4_50"`, `"DICT_5X5_100"`, `"DICT_6X6_250"`. Default:
+#'   `"DICT_4X4_50"`.
+#' @param marker_id Integer or `NULL`. If given, only a marker carrying this ID
+#'   is accepted, which is the strongest protection against leaf damage or
+#'   speckle being misread as a marker. `NULL` accepts any ID. Default: `NULL`.
+#' @param marker_min_px Integer. Minimum marker side length in pixels. Smaller
+#'   detections are rejected as false positives. Default: `40L`.
+#' @param marker_max_dev Numeric. A marker-derived field of view is rejected
+#'   when it differs from `image_real_cm` by more than this factor in either
+#'   direction, and `image_real_cm` is used instead. Set larger only if the
+#'   fallback value is a rough guess. Default: `2`.
+#' @param camera_height_cm Numeric or `NULL`. Height of the camera above the
+#'   plane on which `image_real_cm` was measured, usually the ground. Supplying
+#'   it together with `canopy_height_cm` corrects the magnification caused by
+#'   leaves sitting above that plane. `NULL` disables the correction. The
+#'   correction is skipped when a marker supplied the scale, since a marker
+#'   placed at canopy height already measures the correct plane.
+#'   Default: `NULL`.
+#' @param canopy_height_cm Numeric of length 1 or 2. Height of the leaf layer
+#'   above the ground at the time of capture. A single value applies one
+#'   correction. A length-2 vector `c(min, max)` corrects using the midpoint and
+#'   additionally reports Object Area Min (cm2) and Object Area Max (cm2), which
+#'   bracket the estimate for a canopy spanning that range. Default: `0`.
+#' @param object_order Character. Rule for assigning Object ID. `"area"` numbers
+#'   objects from largest to smallest, so IDs change whenever an object grows.
+#'   `"position"` numbers them in reading order (top-left to bottom-right),
+#'   keeping ID to physical location stable across dates, which is what
+#'   time-series analysis needs. Default: `"area"`.
+#' @param params_json Logical. If `TRUE`, writes
+#'   `phenoshot_params_<timestamp>.json` into `output_folder` recording every
+#'   parameter, package versions, and the scale actually used for each image.
+#'   Default: `TRUE`.
 #'
 #' @return A data frame with one row per detected object containing columns
 #'   File Name, Object ID, Image Path, Object Area (cm2), Object Area (px),
+#'   Object Gap Area (cm2), Object Area Min (cm2), Object Area Max (cm2),
 #'   Object Perimeter (cm), Object Length (cm), Object Width (cm),
-#'   Object percent of Image, Pixel Area (cm2/px), and Num objects in Image.
+#'   Object percent of Image, Pixel Area (cm2/px), Canopy Height (cm),
+#'   Scale Source, and Num objects in Image.
+#'
+#'   Object Gap Area (cm2) is the background enclosed by the object's external
+#'   contour but excluded from Object Area (cm2). Object Area Min (cm2) and
+#'   Object Area Max (cm2) bracket the estimate when `canopy_height_cm` is given
+#'   as a range, and equal Object Area (cm2) otherwise. Canopy Height (cm) is
+#'   the height actually used for the correction, and Scale Source records
+#'   whether the scale came from a detected marker or from image_real_cm.
 #'
 #' @export
 #'
@@ -127,6 +208,27 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip
 #'   show_crosshair        = FALSE
 #' )
 #'
+#' # Case 3: Removing thin grass-type weed leaves from a crop canopy
+#' phenoshot(
+#'   input_folder      = "./Input",
+#'   output_folder     = "./Output",
+#'   image_real_cm     = c(60, 60),
+#'   weed_filter       = "width",
+#'   leaf_min_width_cm = 1.5,
+#'   debug_weed_mask   = TRUE   # inspect <stem>_weed.png, then tune the width
+#' )
+#'
+#' # Case 4: Frame on the ground, camera above it, canopy in between
+#' phenoshot(
+#'   input_folder      = "./Input",
+#'   output_folder     = "./Output",
+#'   image_real_cm     = c(75, 75),   # frame inner size, measured at the ground
+#'   camera_height_cm  = 100,         # lens to ground, measured
+#'   canopy_height_cm  = c(10, 30),   # leaf layer above the ground
+#'   alpha_threshold   = 128L,
+#'   object_order      = "position"
+#' )
+#'
 #' # Github: https://github.com/agronomy4future/phenoshot
 #' # All Rights Reserved (c) J.K Kim (kimjk@agronomy4future.com)
 #' }
@@ -148,10 +250,51 @@ phenoshot= function(
     fill_opacity            = 0.25,
     distinct_colors         = TRUE,
     outline_thickness       = 0L,
-    show_crosshair          = FALSE
+    show_crosshair          = FALSE,
+    weed_filter             = c("none", "width"),
+    leaf_min_width_cm       = 1.5,
+    debug_weed_mask         = FALSE,
+    outline_mode            = c("exact", "outer"),
+    outline_min_hole_cm2    = 1,
+    k_close_iter            = 2L,
+    scale_marker            = c("none", "aruco"),
+    marker_size_cm          = 5,
+    aruco_dict              = "DICT_4X4_50",
+    marker_id               = NULL,
+    marker_min_px           = 40L,
+    marker_max_dev          = 2,
+    camera_height_cm        = NULL,
+    canopy_height_cm        = 0,
+    object_order            = c("area", "position"),
+    params_json             = TRUE
 ) {
   if (length(image_real_cm) == 1) image_real_cm= rep(image_real_cm, 2)
   stopifnot(length(image_real_cm) == 2, all(is.finite(image_real_cm)), all(image_real_cm > 0))
+
+  weed_filter= match.arg(weed_filter)
+  outline_mode= match.arg(outline_mode)
+  stopifnot(length(leaf_min_width_cm) == 1, is.finite(leaf_min_width_cm), leaf_min_width_cm >= 0)
+  stopifnot(length(outline_min_hole_cm2) == 1, is.finite(outline_min_hole_cm2),
+            outline_min_hole_cm2 >= 0)
+  stopifnot(length(k_close_iter) == 1, is.finite(k_close_iter), k_close_iter >= 0)
+  scale_marker= match.arg(scale_marker)
+  object_order= match.arg(object_order)
+  stopifnot(length(marker_size_cm) == 1, is.finite(marker_size_cm), marker_size_cm > 0)
+  stopifnot(length(aruco_dict) == 1, is.character(aruco_dict))
+  stopifnot(is.null(marker_id) || (length(marker_id) == 1 && is.finite(marker_id)))
+  stopifnot(length(marker_min_px) == 1, is.finite(marker_min_px), marker_min_px > 0)
+  stopifnot(length(marker_max_dev) == 1, is.finite(marker_max_dev), marker_max_dev > 1)
+  if (!is.null(camera_height_cm)) {
+    stopifnot(length(camera_height_cm) == 1, is.finite(camera_height_cm), camera_height_cm > 0)
+    stopifnot(length(canopy_height_cm) %in% 1:2, all(is.finite(canopy_height_cm)),
+              all(canopy_height_cm >= 0))
+    if (max(canopy_height_cm) >= camera_height_cm)
+      stop("canopy_height_cm must be below camera_height_cm.", call. = FALSE)
+  }
+  if (weed_filter == "width" && leaf_min_width_cm >= min(image_real_cm) / 2) {
+    warning("leaf_min_width_cm (", leaf_min_width_cm, ") is large relative to ",
+            "image_real_cm; most or all objects may be removed.", call. = FALSE)
+  }
 
   if (grepl("^sandbox_", photoroom_api_key)) {
     warning("Photoroom sandbox key detected: results are watermarked and are ",
@@ -167,6 +310,8 @@ phenoshot= function(
 import cv2
 import numpy as np
 import os, glob, pandas as pd
+import json
+from datetime import datetime
 import requests
 from PIL import Image
 import io
@@ -311,13 +456,82 @@ def _perimeter_cm_from_cnt(cnt, sx, sy):
     d = np.diff(np.vstack([c_scaled, c_scaled[0]]), axis=0)
     return float(np.sqrt((d[:,0]**2) + (d[:,1]**2)).sum())
 
+def _detect_scale_px_per_cm(bgr_or_rgb, dict_name, marker_size_cm,
+                            marker_id=None, marker_min_px=40):
+    '''Return (px_per_cm, note). px_per_cm is None when no marker is usable.'''
+    if not hasattr(cv2, 'aruco'):
+        return None, 'cv2.aruco unavailable (install opencv-contrib-python)'
+    key = getattr(cv2.aruco, str(dict_name), None)
+    if key is None:
+        return None, f'unknown dictionary {dict_name}'
+    try:
+        dic = cv2.aruco.getPredefinedDictionary(key)
+    except Exception as e:
+        return None, f'dictionary error: {e}'
+    gray = cv2.cvtColor(bgr_or_rgb, cv2.COLOR_RGB2GRAY)
+    corners, ids = None, None
+    try:                                        # OpenCV >= 4.7
+        det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
+        corners, ids, _ = det.detectMarkers(gray)
+    except AttributeError:                      # OpenCV < 4.7
+        try:
+            corners, ids, _ = cv2.aruco.detectMarkers(
+                gray, dic, parameters=cv2.aruco.DetectorParameters_create())
+        except Exception as e:
+            return None, f'detector error: {e}'
+    if not corners:
+        return None, 'no marker detected'
+    if float(marker_size_cm) <= 0:
+        return None, 'marker_size_cm must be > 0'
+
+    id_list = [] if ids is None else [int(v) for v in np.asarray(ids).ravel()]
+    n_found = len(corners)
+
+    # keep only the requested ID, when one is specified
+    if marker_id is not None and id_list:
+        want = int(marker_id)
+        pairs = [(c, i) for c, i in zip(corners, id_list) if i == want]
+        if not pairs:
+            return None, f'marker id {want} not among detected ids {id_list}'
+        corners = [p[0] for p in pairs]
+
+    # median side length per marker, then reject implausibly small patterns
+    per_marker = []
+    for c in corners:
+        p = np.asarray(c).reshape(4, 2).astype(np.float64)
+        s = [float(np.linalg.norm(p[i] - p[(i + 1) % 4])) for i in range(4)]
+        per_marker.append((float(np.median(s)), float(np.max(s)), float(np.min(s))))
+    med_side = float(np.median([m[0] for m in per_marker]))
+    if med_side < float(marker_min_px):
+        return None, (f'rejected: marker side {med_side:.0f} px < marker_min_px '
+                      f'({marker_min_px}) -- almost certainly a false positive '
+                      f'(found {n_found}, ids {id_list})')
+
+    ppc    = med_side / float(marker_size_cm)
+    hi, lo = max(m[1] for m in per_marker), min(m[2] for m in per_marker)
+    spread = (hi - lo) / max(1e-9, med_side)
+    note = (f'{len(corners)} marker(s) ids {id_list}, side {med_side:.0f} px, '
+            f'{ppc:.2f} px/cm, spread {100*spread:.1f}%')
+    if spread > 0.15:
+        note += ' -- WARNING: large spread, camera may be tilted'
+    return ppc, note
+
+
 def process_images(input_folder, output_folder,
                    image_real_cm_W, image_real_cm_H,
                    photoroom_api_key, photoroom_size,
                    min_component_area_px, k_open, k_close,
                    object_min_area_cm2, rel_min_frac_of_largest, max_keep,
                    label_uses_aabb, contour_color, alpha_threshold, fill_opacity,
-                   distinct_colors, outline_thickness, show_crosshair):
+                   distinct_colors, outline_thickness, show_crosshair,
+                   weed_filter='none', leaf_min_width_cm=0.0,
+                   debug_weed_mask=False, outline_mode='exact',
+                   outline_min_hole_cm2=1.0, k_close_iter=2,
+                   scale_marker='none', marker_size_cm=5.0,
+                   aruco_dict='DICT_4X4_50', marker_id=None,
+                   marker_min_px=40, marker_max_dev=2.0,
+                   object_order='area', params_json=True,
+                   camera_height_cm=None, canopy_height_cm=0.0):
 
     if not os.path.isdir(input_folder):
         print(f'Input folder does not exist: {input_folder}')
@@ -331,6 +545,7 @@ def process_images(input_folder, output_folder,
 
     col  = tuple(int(c) for c in contour_color)
     rows = []
+    run_images = []
 
     for path in image_paths:
         filename = os.path.basename(path)
@@ -374,16 +589,118 @@ def process_images(input_folder, output_folder,
         alpha = rgba[:, :, 3]
         rgb   = rgba[:, :, :3]
 
+        # -- 2a. scale: fiducial marker overrides image_real_cm ------
+        # The marker is searched in the ORIGINAL image, because background
+        # removal deletes it from the transparent PNG.
+        img_cm_W     = float(image_real_cm_W)
+        img_cm_H     = float(image_real_cm_H)
+        scale_source = 'image_real_cm'
+        scale_note   = 'marker detection disabled'
+        if str(scale_marker) == 'aruco':
+            if is_nobg_mode:
+                scale_note = 'nobg input mode: original image unavailable'
+            else:
+                try:
+                    orig = np.array(Image.open(path).convert('RGB'))
+                except Exception as e:
+                    orig, scale_note = None, f'could not read original: {e}'
+                if orig is not None:
+                    ppc, scale_note = _detect_scale_px_per_cm(
+                        orig, aruco_dict, marker_size_cm, marker_id, marker_min_px)
+                    if ppc:
+                        mh, mw = orig.shape[:2]
+                        rh, rw = rgba.shape[:2]
+                        # Photoroom may resize; rescale px/cm to the returned PNG
+                        ppc_r = ppc * (0.5 * (rw / float(mw) + rh / float(mh)))
+                        cand_W, cand_H = rw / ppc_r, rh / ppc_r
+                        # sanity check against the declared field of view
+                        dev = max(cand_W / float(image_real_cm_W),
+                                  float(image_real_cm_W) / cand_W)
+                        if dev > float(marker_max_dev):
+                            scale_note = (f'rejected: implied field of view '
+                                          f'{cand_W:.0f} x {cand_H:.0f} cm differs from '
+                                          f'image_real_cm by {dev:.1f}x '
+                                          f'(limit {marker_max_dev}x) -- {scale_note}')
+                        else:
+                            img_cm_W, img_cm_H = cand_W, cand_H
+                            scale_source = 'aruco'
+            if scale_source == 'aruco':
+                print(f'  scale: {scale_note} -> field of view {img_cm_W:.1f} x {img_cm_H:.1f} cm')
+            else:
+                print(f'  scale WARNING: {scale_note}')
+                print(f'  scale: falling back to image_real_cm '
+                      f'({image_real_cm_W:.1f} x {image_real_cm_H:.1f} cm)')
+
+        # -- 2b. canopy height correction ----------------------------
+        # The frame sits on the ground but the leaves are above it, so the
+        # leaf plane is closer to the camera and appears magnified. Skipped
+        # when a marker supplied the scale -- place the marker at canopy
+        # height and it already measures the correct plane.
+        canopy_mid   = 0.0
+        canopy_lo_r  = 1.0          # area multiplier at the TALLEST canopy
+        canopy_hi_r  = 1.0          # area multiplier at the SHORTEST canopy
+        canopy_note  = 'not applied'
+        if camera_height_cm is not None and scale_source == 'image_real_cm':
+            H = float(camera_height_cm)
+            try:
+                ch = [float(x) for x in canopy_height_cm]
+            except TypeError:
+                ch = [float(canopy_height_cm)]
+            ch = [c for c in ch if c == c]
+            h_lo, h_hi = min(ch), max(ch)
+            if H <= 0 or h_hi >= H:
+                canopy_note = f'skipped: canopy {h_hi} cm not below camera {H} cm'
+            elif h_hi <= 0:
+                canopy_note = 'canopy height 0 -- no correction needed'
+            else:
+                canopy_mid = 0.5 * (h_lo + h_hi)
+                f_mid      = (H - canopy_mid) / H
+                img_cm_W  *= f_mid
+                img_cm_H  *= f_mid
+                canopy_lo_r = ((H - h_hi) / (H - canopy_mid)) ** 2
+                canopy_hi_r = ((H - h_lo) / (H - canopy_mid)) ** 2
+                canopy_note = (f'camera {H:.0f} cm, canopy {h_lo:g}-{h_hi:g} cm '
+                               f'(mid {canopy_mid:g}) -> area x{f_mid**2:.3f}')
+                print(f'  canopy: {canopy_note}, '
+                      f'field of view {img_cm_W:.2f} x {img_cm_H:.2f} cm')
+
         mask = (alpha > int(alpha_threshold)).astype(np.uint8) * 255
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                                 np.ones(tuple(k_open),  np.uint8), iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
-                                np.ones(tuple(k_close), np.uint8), iterations=2)
+
+        # -- 2b. thin-structure (grass weed) removal -----------------
+        # Runs before MORPH_CLOSE, which would otherwise bridge weed leaves
+        # onto neighbouring target objects and make them inseparable.
+        if str(weed_filter) == 'width' and float(leaf_min_width_cm) > 0:
+            hh, ww    = mask.shape[:2]
+            px_per_cm = 0.5 * (ww / img_cm_W + hh / img_cm_H)
+            r         = max(1, int(round(0.5 * float(leaf_min_width_cm) * px_per_cm)))
+            dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+            core = (dist >= r).astype(np.uint8) * 255
+            if cv2.countNonZero(core) == 0:
+                print(f'  weed_filter: nothing reaches {leaf_min_width_cm} cm wide -- step skipped')
+            else:
+                ker    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r+1, 2*r+1))
+                kept   = cv2.bitwise_and(cv2.dilate(core, ker), mask)
+                before = cv2.countNonZero(mask)
+                after  = cv2.countNonZero(kept)
+                if debug_weed_mask:
+                    weed_path = os.path.join(output_folder, stem + '_weed.png')
+                    cv2.imwrite(weed_path, cv2.subtract(mask, kept))
+                    print(f'  weed_filter: discarded pixels saved to {weed_path}')
+                pct = (100.0 * (before - after) / before) if before else 0.0
+                print(f'  weed_filter: removed {before-after} px ({pct:.1f}%), radius {r} px')
+                mask = kept
+
+        if int(k_close_iter) > 0:
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                                    np.ones(tuple(k_close), np.uint8),
+                                    iterations=int(k_close_iter))
 
         h, w = mask.shape[:2]
-        area_per_pixel_cm2 = (image_real_cm_W / w) * (image_real_cm_H / h)
-        sx = image_real_cm_W / w
-        sy = image_real_cm_H / h
+        area_per_pixel_cm2 = (img_cm_W / w) * (img_cm_H / h)
+        sx = img_cm_W / w
+        sy = img_cm_H / h
 
         font_scale = max(0.6, round(max(w, h) / 1600, 2))
         line_thick = max(1, int(max(w, h) / 1500))
@@ -408,6 +725,16 @@ def process_images(input_folder, output_folder,
         kept = kept[:int(max_keep)]
         contours = [t[0] for t in kept]
 
+        # -- 3b. object numbering ------------------------------------
+        # 'area' reshuffles IDs whenever an object grows; 'position' keeps
+        # ID -> physical location stable across dates for time-series work.
+        if str(object_order) == 'position':
+            band = max(1, int(round(mask.shape[0] * 0.10)))
+            def _pos_key(c):
+                bx, by, bw_, bh_ = cv2.boundingRect(c)
+                return ((by + bh_ // 2) // band, bx + bw_ // 2)
+            contours.sort(key=_pos_key)
+
         print(f'  Detected: {len(contours)} objects')
 
         # -- 4. composite over white background ----------------------
@@ -423,6 +750,7 @@ def process_images(input_folder, output_folder,
                 actual_mask = cv2.bitwise_and(mask, filled)
                 area_px  = float(cv2.countNonZero(actual_mask))
                 area_cm2 = area_px * area_per_pixel_cm2
+                gap_cm2  = (float(cv2.countNonZero(filled)) - area_px) * area_per_pixel_cm2
                 perim_cm = _perimeter_cm_from_cnt(cnt, sx, sy)
 
                 x, y, bw, bh = cv2.boundingRect(cnt)
@@ -450,8 +778,17 @@ def process_images(input_folder, output_folder,
                                     annotated, 1.0 - float(fill_opacity),
                                     0, annotated)
 
-                # (b) thick outline tracing this object's real contour
-                cv2.drawContours(annotated, [cnt], -1, obj_col, ol_thick, cv2.LINE_AA)
+                # (b) outline tracing this object
+                if str(outline_mode) == 'exact':
+                    # boundary of the pixels actually counted, holes included,
+                    # so the drawing matches Object Area (cm2)
+                    sub, _ = cv2.findContours(actual_mask, cv2.RETR_CCOMP,
+                                              cv2.CHAIN_APPROX_SIMPLE)
+                    min_hole_px = float(outline_min_hole_cm2) / area_per_pixel_cm2
+                    sub = [sc for sc in sub if cv2.contourArea(sc) >= min_hole_px]
+                    cv2.drawContours(annotated, sub, -1, obj_col, ol_thick, cv2.LINE_AA)
+                else:
+                    cv2.drawContours(annotated, [cnt], -1, obj_col, ol_thick, cv2.LINE_AA)
 
                 # (c) optional center crosshair
                 if bool(show_crosshair):
@@ -474,11 +811,16 @@ def process_images(input_folder, output_folder,
                     'Image Path'           : path,
                     'Object Area (cm2)'    : round(area_cm2, 2),
                     'Object Area (px)'     : int(round(area_px)),
+                    'Object Gap Area (cm2)': round(gap_cm2, 2),
+                    'Object Area Min (cm2)': round(area_cm2 * canopy_lo_r, 2),
+                    'Object Area Max (cm2)': round(area_cm2 * canopy_hi_r, 2),
+                    'Canopy Height (cm)'   : round(canopy_mid, 2),
                     'Object Perimeter (cm)': round(perim_cm, 2),
                     'Object Length (cm)'   : round(float(length_cm), 2),
                     'Object Width (cm)'    : round(float(width_cm), 2),
                     'Object % of Image'    : round(100.0 * area_px / (w * h), 2),
                     'Pixel Area (cm2/px)'  : round(area_per_pixel_cm2, 8),
+                    'Scale Source'         : scale_source,
                     'Num objects in Image' : len(contours)
                 })
         else:
@@ -488,6 +830,19 @@ def process_images(input_folder, output_folder,
         cv2.imwrite(proc_path, annotated, [cv2.IMWRITE_JPEG_QUALITY, 95])
         print(f'  Saved: {proc_path}')
 
+        run_images.append({
+            'file'          : filename,
+            'stem'          : stem,
+            'width_px'      : int(w),
+            'height_px'     : int(h),
+            'fov_cm'        : [round(img_cm_W, 3), round(img_cm_H, 3)],
+            'px_per_cm'     : round(0.5 * (w / img_cm_W + h / img_cm_H), 4),
+            'scale_source'  : scale_source,
+            'scale_note'    : scale_note,
+            'canopy_note'   : canopy_note,
+            'n_objects'     : len(contours)
+        })
+
     df = pd.DataFrame(rows)
     csv_path = os.path.join(output_folder, 'image_processed.csv')
     if len(df) > 0:
@@ -496,6 +851,51 @@ def process_images(input_folder, output_folder,
             print(f'CSV saved: {csv_path}')
         except Exception as e:
             print(f'Failed to save CSV: {e}')
+
+    if bool(params_json):
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        meta = {
+            'run_timestamp' : datetime.now().isoformat(timespec='seconds'),
+            'versions'      : {'opencv': cv2.__version__, 'numpy': np.__version__,
+                               'pandas': pd.__version__},
+            'input_folder'  : input_folder,
+            'output_folder' : output_folder,
+            'csv_path'      : csv_path if len(df) > 0 else None,
+            'parameters'    : {
+                'image_real_cm'          : [float(image_real_cm_W), float(image_real_cm_H)],
+                'min_component_area_px'  : int(min_component_area_px),
+                'k_open'                 : [int(v) for v in k_open],
+                'k_close'                : [int(v) for v in k_close],
+                'k_close_iter'           : int(k_close_iter),
+                'object_min_area_cm2'    : float(object_min_area_cm2),
+                'rel_min_frac_of_largest': float(rel_min_frac_of_largest),
+                'max_keep'               : int(max_keep),
+                'label_uses_aabb'        : bool(label_uses_aabb),
+                'alpha_threshold'        : int(alpha_threshold),
+                'fill_opacity'           : float(fill_opacity),
+                'outline_mode'           : str(outline_mode),
+                'outline_min_hole_cm2'   : float(outline_min_hole_cm2),
+                'weed_filter'            : str(weed_filter),
+                'leaf_min_width_cm'      : float(leaf_min_width_cm),
+                'scale_marker'           : str(scale_marker),
+                'marker_size_cm'         : float(marker_size_cm),
+                'aruco_dict'             : str(aruco_dict),
+                'marker_id'              : (None if marker_id is None else int(marker_id)),
+                'marker_min_px'          : int(marker_min_px),
+                'marker_max_dev'         : float(marker_max_dev),
+                'object_order'           : str(object_order),
+                'camera_height_cm'       : (None if camera_height_cm is None
+                                            else float(camera_height_cm))
+            },
+            'images'        : run_images
+        }
+        json_path = os.path.join(output_folder, f'phenoshot_params_{stamp}.json')
+        try:
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, indent=2, ensure_ascii=False)
+            print(f'Parameters saved: {json_path}')
+        except Exception as e:
+            print(f'Failed to save parameter log: {e}')
 
     return df
 "
@@ -520,7 +920,23 @@ df_py= reticulate::py$process_images(
   fill_opacity            = as.numeric(fill_opacity),
   distinct_colors         = isTRUE(distinct_colors),
   outline_thickness       = as.integer(outline_thickness),
-  show_crosshair          = isTRUE(show_crosshair)
+  show_crosshair          = isTRUE(show_crosshair),
+  weed_filter             = as.character(weed_filter),
+  leaf_min_width_cm       = as.numeric(leaf_min_width_cm),
+  debug_weed_mask         = isTRUE(debug_weed_mask),
+  outline_mode            = as.character(outline_mode),
+  outline_min_hole_cm2    = as.numeric(outline_min_hole_cm2),
+  k_close_iter            = as.integer(k_close_iter),
+  scale_marker            = as.character(scale_marker),
+  marker_size_cm          = as.numeric(marker_size_cm),
+  aruco_dict              = as.character(aruco_dict),
+  marker_id               = if (is.null(marker_id)) NULL else as.integer(marker_id),
+  marker_min_px           = as.integer(marker_min_px),
+  marker_max_dev          = as.numeric(marker_max_dev),
+  camera_height_cm        = if (is.null(camera_height_cm)) NULL else as.numeric(camera_height_cm),
+  canopy_height_cm        = as.numeric(canopy_height_cm),
+  object_order            = as.character(object_order),
+  params_json             = isTRUE(params_json)
 )
 
 out= reticulate::py_to_r(df_py)

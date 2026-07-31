@@ -1,15 +1,20 @@
 Package: phenoshot
 Title: AI-Based Plant Image Analysis for Morphological Trait Measurement
-Version: 0.0.0.9000
+Version: 0.1.0
 Authors@R: 
     person("JK", "Kim", , "kimjk@agronomy4future.com", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0002-9913-8768"))
-Description: Provides an automated pipeline for plant phenotyping through image 
-    analysis. Uses AI-based background removal (remove.bg API or U2Net) combined 
-    with OpenCV-based object detection to measure morphological traits including 
-    area, perimeter, length, and width of plant objects. Supports JPG, PNG, and 
-    HEIC image formats. Designed for agronomic research applications such as 
-    leaf area estimation, fruit morphology analysis, and seedling measurement.
+Description: Provides an automated pipeline for plant phenotyping through image
+    analysis. Uses AI-based background removal (Photoroom API) combined with
+    OpenCV-based object detection to measure morphological traits including
+    area, perimeter, length, and width of plant objects. Additional steps
+    remove thin non-target structures such as grass weed leaves, exclude
+    background enclosed between objects from the measured area, and correct the
+    pixel-to-centimeter scale either from a detected ArUco marker or from the
+    camera and canopy heights. Every run writes a parameter log for
+    reproducibility. Supports JPG, PNG, and HEIC image formats. Designed for
+    agronomic research applications such as leaf area estimation, canopy cover
+    assessment, fruit morphology analysis, and seedling measurement.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -20,4 +25,8 @@ Suggests:
     knitr,
     rmarkdown
 VignetteBuilder: knitr
+SystemRequirements: Python (>= 3.8) with numpy, pandas, pillow, requests and
+    opencv-python; opencv-contrib-python instead of opencv-python is required
+    for scale_marker = "aruco"; pillow-heif for HEIC input
 URL: https://github.com/agronomy4future/phenoshot
+BugReports: https://github.com/agronomy4future/phenoshot/issues
